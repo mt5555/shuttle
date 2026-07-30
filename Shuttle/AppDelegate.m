@@ -463,6 +463,19 @@
     }
 }
 
+// A menu entry is a URL only when it carries a scheme and holds no whitespace.
+// -URLWithString: is not sufficient on its own: since the WHATWG-style parser it
+// percent-escapes any shell command into a non-nil URL, which would send every entry
+// to Launch Services instead of the terminal and fail with paramErr (-50).
+- (NSURL *) urlForEntry: (NSString *) entry
+{
+    if ([entry rangeOfCharacterFromSet:[NSCharacterSet whitespaceCharacterSet]].location != NSNotFound)
+        return nil;
+
+    NSURL *url = [NSURL URLWithString:entry];
+    return url.scheme.length ? url : nil;
+}
+
 - (void) openHost:(NSMenuItem *) sender {
     //NSLog(@"sender: %@", sender);
     //NSLog(@"Command: %@",[sender representedObject]);
@@ -558,7 +571,7 @@
     NSURL *url;
     if ( ![terminalWindow isEqualToString:@"virtual"] ) {
         passParameters = @[escapedObject, terminalTheme, terminalTitle];
-        url = [NSURL URLWithString:escapedObject];
+        url = [self urlForEntry:escapedObject];
     }
     else {
         passParameters = @[escapedObject, terminalTitle];
