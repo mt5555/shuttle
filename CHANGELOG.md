@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [1.3.0-fork.1] - 2026-07-30
+Fork of [fitztrev/shuttle](https://github.com/fitztrev/shuttle). Based on upstream master, which carries version 1.3.0 in its bundle but was never tagged or released. The last upstream release is 1.2.9.
+
+### Fixed
+- Menu entries failed with "The application can't be opened." (`paramErr`, -50) on current macOS. `NSURL URLWithString:` no longer returns `nil` for a shell command, it percent-escapes it into a valid URL, so every entry was handed to Launch Services instead of the terminal. Entries are now treated as URLs only when they carry a scheme and contain no whitespace.
+- `"launch_at_login": true` had no effect. The `LSSharedFileList` backend, deprecated in macOS 10.11, is unreliable: rebuilt from source it still registers, but the shipped 1.2.9 binary does not register at all on a current system. Replaced with a `launchd` LaunchAgent at `~/Library/LaunchAgents/shuttle.Shuttle.LaunchAtLogin.plist`, which carries no code-signing requirement. `SMAppService` was rejected as the replacement because it requires a Team ID and refuses an ad-hoc signature.
+
+### Changed
+- Builds as a universal binary and runs natively on Apple Silicon.
+- Minimum deployment target raised from 10.9 to 11.0. Required, not cosmetic: arm64 macOS starts at 11.0, and the x86_64 slice no longer links below 10.11 because current Xcode dropped `libarclite`.
+
 ## [Unreleased]
 - The ability to open multiple, or same command(s) off one menu item. https://github.com/fitztrev/shuttle/issues/236
 - The ability to add a second json.config file 
