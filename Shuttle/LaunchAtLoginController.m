@@ -21,102 +21,91 @@
 //  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 //  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 //  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+//
+//  This file originally wrapped LSSharedFileList, deprecated in macOS 10.11 and
+//  marked "no longer supported" in the system headers. It is unreliable rather
+//  than uniformly broken: rebuilt from source it still registers on macOS 26,
+//  yet the shipped 1.2.9 release fails to register on a current system even with
+//  launch_at_login set. SMAppService is the sanctioned replacement but requires a
+//  Team ID and rejects an ad-hoc signature, so it is unavailable to a build
+//  anyone can produce for free. A plain launchd LaunchAgent carries no signing
+//  requirement and behaves the same way whoever built the binary.
 
 #import "LaunchAtLoginController.h"
+#import <unistd.h>
 
+static NSString *const kLabel = @"shuttle.Shuttle.LaunchAtLogin";
 static NSString *const StartAtLoginKey = @"launchAtLogin";
 
-@interface LaunchAtLoginController ()
-@property(assign) LSSharedFileListRef loginItems;
-@end
-
 @implementation LaunchAtLoginController
-@synthesize loginItems;
 
-#pragma mark Change Observing
+#pragma mark Agent Location
 
-void sharedFileListDidChange(LSSharedFileListRef inList, void *context)
+- (NSString*) plistPath
 {
-    LaunchAtLoginController *self = (id) context;
-    [self willChangeValueForKey:StartAtLoginKey];
-    [self didChangeValueForKey:StartAtLoginKey];
+    NSString *dir = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/LaunchAgents"];
+    return [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@.plist", kLabel]];
 }
 
-#pragma mark Initialization
+#pragma mark Launch Agent Control
 
-- (id) init
+- (void) install
 {
-    [super init];
-    loginItems = LSSharedFileListCreate(NULL, kLSSharedFileListSessionLoginItems, NULL);
-    LSSharedFileListAddObserver(loginItems, CFRunLoopGetMain(),
-                                (CFStringRef)NSDefaultRunLoopMode, sharedFileListDidChange, self);
-    return self;
+    NSString *path = [self plistPath];
+    [[NSFileManager defaultManager] createDirectoryAtPath:[path stringByDeletingLastPathComponent]
+                              withIntermediateDirectories:YES attributes:nil error:NULL];
+
+    NSDictionary *job = @{
+        @"Label": kLabel,
+        // open(1) rather than the inner executable: it goes through Launch
+        // Services, which is the better behaved path for a bundled LSUIElement app.
+        @"ProgramArguments": @[@"/usr/bin/open", @"-a", [[NSBundle mainBundle] bundlePath]],
+        @"RunAtLoad": @YES,
+    };
+
+    // Deliberately not bootstrapped here. launchd reads ~/Library/LaunchAgents at
+    // login, which is exactly the semantics we want; bootstrapping now would fire
+    // RunAtLoad immediately and start a second copy of the app.
+    [job writeToFile:path atomically:YES];
 }
 
-- (void) dealloc
+- (void) uninstall
 {
-    LSSharedFileListRemoveObserver(loginItems, CFRunLoopGetMain(),
-                                   (CFStringRef)NSDefaultRunLoopMode, sharedFileListDidChange, self);
-    CFRelease(loginItems);
-    [super dealloc];
-}
+    NSString *path = [self plistPath];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path])
+        return;
 
-#pragma mark Launch List Control
-
-- (LSSharedFileListItemRef) findItemWithURL: (NSURL*) wantedURL inFileList: (LSSharedFileListRef) fileList
-{
-    if (wantedURL == NULL || fileList == NULL)
-        return NULL;
-    
-    NSArray *listSnapshot = [NSMakeCollectable(LSSharedFileListCopySnapshot(fileList, NULL)) autorelease];
-    for (id itemObject in listSnapshot) {
-        LSSharedFileListItemRef item = (LSSharedFileListItemRef) itemObject;
-        UInt32 resolutionFlags = kLSSharedFileListNoUserInteraction | kLSSharedFileListDoNotMountVolumes;
-        CFURLRef currentItemURL = NULL;
-        LSSharedFileListItemResolve(item, resolutionFlags, &currentItemURL, NULL);
-        if (currentItemURL && CFEqual(currentItemURL, wantedURL)) {
-            CFRelease(currentItemURL);
-            return item;
-        }
-        if (currentItemURL)
-            CFRelease(currentItemURL);
+    // Best effort, in case a previous login already bootstrapped the agent.
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/bin/launchctl";
+    task.arguments = @[@"bootout", [NSString stringWithFormat:@"gui/%u/%@", getuid(), kLabel]];
+    task.standardOutput = [NSFileHandle fileHandleWithNullDevice];
+    task.standardError  = [NSFileHandle fileHandleWithNullDevice];
+    @try {
+        [task launch];
+        [task waitUntilExit];
+    } @catch (NSException *exception) {
+        // Not loaded, nothing to unload.
     }
-    
-    return NULL;
-}
 
-- (BOOL) willLaunchAtLogin: (NSURL*) itemURL
-{
-    return !![self findItemWithURL:itemURL inFileList:loginItems];
-}
-
-- (void) setLaunchAtLogin: (BOOL) enabled forURL: (NSURL*) itemURL
-{
-    LSSharedFileListItemRef appItem = [self findItemWithURL:itemURL inFileList:loginItems];
-    if (enabled && !appItem) {
-        LSSharedFileListInsertItemURL(loginItems, kLSSharedFileListItemBeforeFirst,
-                                      NULL, NULL, (CFURLRef)itemURL, NULL, NULL);
-    } else if (!enabled && appItem)
-        LSSharedFileListItemRemove(loginItems, appItem);
+    [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
 }
 
 #pragma mark Basic Interface
 
-- (NSURL*) appURL
+- (BOOL) launchAtLogin
 {
-    return [NSURL fileURLWithPath:[[NSBundle mainBundle] bundlePath]];
+    return [[NSFileManager defaultManager] fileExistsAtPath:[self plistPath]];
 }
 
 - (void) setLaunchAtLogin: (BOOL) enabled
 {
     [self willChangeValueForKey:StartAtLoginKey];
-    [self setLaunchAtLogin:enabled forURL:[self appURL]];
+    if (enabled)
+        [self install];
+    else
+        [self uninstall];
     [self didChangeValueForKey:StartAtLoginKey];
-}
-
-- (BOOL) launchAtLogin
-{
-    return [self willLaunchAtLogin:[self appURL]];
 }
 
 @end
